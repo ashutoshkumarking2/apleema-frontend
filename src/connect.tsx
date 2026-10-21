@@ -35,7 +35,6 @@ export default function Connect() {
       try {
         cred = GithubAuthProvider.credentialFromResult(await signInWithPopup(ghAuth, p))
       } catch (e) {
-        // Same-email conflicts still carry the GitHub token; use it
         cred = GithubAuthProvider.credentialFromError(e as FirebaseError)
         if (!cred) throw e
       } finally {
@@ -59,6 +58,7 @@ export default function Connect() {
     }
   }
 
+  const loading = status === null
   const steps = [
     {
       title: "1. Sign in",
@@ -70,17 +70,16 @@ export default function Connect() {
       title: "2. Connect GitHub",
       desc: status?.githubLogin ? `@${status.githubLogin}` : "Access your repositories",
       done: !!status?.github,
-      action: { label: status?.github ? "Reconnect" : "Connect GitHub", run: connectGithub },
+      action: loading || status?.github ? null : { label: "Connect GitHub", run: connectGithub },
     },
     {
       title: "3. Connect Vercel",
       desc: "Import and deploy from Vercel",
       done: !!status?.vercel,
-      action: {
-        label: status?.vercel ? "Reconnect" : "Connect Vercel",
-        run: connectVercel,
-        disabled: !status?.github,
-      },
+      action:
+        loading || status?.vercel
+          ? null
+          : { label: "Connect Vercel", run: connectVercel, disabled: !status?.github },
     },
   ]
 
@@ -96,13 +95,17 @@ export default function Connect() {
             </div>
             <Badge variant={s.done ? "default" : "secondary"}>{s.done ? "Done" : "Pending"}</Badge>
           </CardHeader>
-          {s.action && (
-            <CardContent>
-              <Button variant={s.done ? "outline" : "default"} disabled={s.action.disabled} onClick={s.action.run}>
+          <CardContent>
+            {s.done ? (
+              <p className="text-sm font-medium">Done. You are connected.</p>
+            ) : s.action ? (
+              <Button disabled={s.action.disabled} onClick={s.action.run}>
                 {s.action.label}
               </Button>
-            </CardContent>
-          )}
+            ) : (
+              <p className="text-sm text-muted-foreground">Checking…</p>
+            )}
+          </CardContent>
         </Card>
       ))}
       {status?.github && status?.vercel && (
