@@ -1,7 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react"
 import { useSearchParams } from "react-router-dom"
 import {
-  GithubAuthProvider,
   GoogleAuthProvider,
   createUserWithEmailAndPassword,
   signInWithCustomToken,
@@ -10,7 +9,6 @@ import {
 } from "firebase/auth"
 import { toast } from "sonner"
 import { auth } from "./firebase"
-import { api, API_URL } from "./api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -38,7 +36,7 @@ export default function Login() {
       const err = e as { code?: string; message: string }
       toast.error(
         err.code === "auth/account-exists-with-different-credential"
-          ? "This email already uses another login. Sign in with that first, then connect GitHub from the Connect page."
+          ? "This email is already registered with another login. Sign in with Google first."
           : err.message
       )
     } finally {
@@ -48,17 +46,10 @@ export default function Login() {
 
   const google = () => run(async () => void (await signInWithPopup(auth, new GoogleAuthProvider())))
 
-  const github = () =>
-    run(async () => {
-      const p = new GithubAuthProvider()
-      p.addScope("repo")
-      const r = await signInWithPopup(auth, p)
-      const cred = GithubAuthProvider.credentialFromResult(r)
-      if (cred?.accessToken) await api.post("/api/github/token", { token: cred.accessToken })
-    })
-
-  const vercel = () => {
-    window.location.href = `${API_URL}/api/vercel/login`
+  // GitHub and Vercel are connected after signing in with Google
+  const needGoogle = (what: string) => {
+    toast.info(`First sign in with Google. Then connect ${what} from the Connect page.`)
+    google()
   }
 
   const emailAuth = (e: FormEvent) => {
@@ -82,8 +73,8 @@ export default function Login() {
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
           <Button variant="outline" disabled={busy} onClick={google}>Continue with Google</Button>
-          <Button variant="outline" disabled={busy} onClick={github}>Continue with GitHub</Button>
-          <Button variant="outline" disabled={busy} onClick={vercel}>Continue with Vercel</Button>
+          <Button variant="outline" disabled={busy} onClick={() => needGoogle("GitHub")}>Continue with GitHub</Button>
+          <Button variant="outline" disabled={busy} onClick={() => needGoogle("Vercel")}>Continue with Vercel</Button>
           <div className="my-1 text-center text-xs text-muted-foreground">or use email</div>
           <form onSubmit={emailAuth} className="flex flex-col gap-3">
             <Input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required />

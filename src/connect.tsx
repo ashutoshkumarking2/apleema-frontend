@@ -1,11 +1,9 @@
-﻿import { useEffect, useState } from "react"
+import { useEffect, useState } from "react"
 import { useNavigate, useSearchParams } from "react-router-dom"
-import {
-  GithubAuthProvider,
-  signInWithPopup,
-} from "firebase/auth"
+import { GithubAuthProvider, signInWithPopup, signOut, type OAuthCredential } from "firebase/auth"
+import type { FirebaseError } from "firebase/app"
 import { toast } from "sonner"
-import { auth } from "./firebase"
+import { auth, ghAuth } from "./firebase"
 import { api } from "./api"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -29,15 +27,20 @@ export default function Connect() {
   }, [params])
 
   async function connectGithub() {
-    if (!auth.currentUser) {
-      toast.error("Please sign in first")
-      return
-    }
     const p = new GithubAuthProvider()
     p.addScope("repo")
+    p.setCustomParameters({ prompt: "select_account" })
     try {
-      const r = await signInWithPopup(auth, p)
-      const cred = GithubAuthProvider.credentialFromResult(r)
+      let cred: OAuthCredential | null = null
+      try {
+        cred = GithubAuthProvider.credentialFromResult(await signInWithPopup(ghAuth, p))
+      } catch (e) {
+        // Same-email conflicts still carry the GitHub token; use it
+        cred = GithubAuthProvider.credentialFromError(e as FirebaseError)
+        if (!cred) throw e
+      } finally {
+        await signOut(ghAuth).catch(() => {})
+      }
       if (!cred?.accessToken) throw new Error("GitHub token not received")
       await api.post("/api/github/token", { token: cred.accessToken })
       toast.success("GitHub connected")
@@ -67,19 +70,17 @@ export default function Connect() {
       title: "2. Connect GitHub",
       desc: status?.githubLogin ? `@${status.githubLogin}` : "Access your repositories",
       done: !!status?.github,
-      action: status?.github ? null : { label: "Connect GitHub", run: connectGithub },
+      action: { label: status?.github ? "Reconnect" : "Connect GitHub", run: connectGithub },
     },
     {
       title: "3. Connect Vercel",
       desc: "Import and deploy from Vercel",
       done: !!status?.vercel,
-      action: status?.vercel
-        ? null
-        : {
-            label: "Connect Vercel",
-            run: connectVercel,
-            disabled: !status?.github,
-          },
+      action: {
+        label: status?.vercel ? "Reconnect" : "Connect Vercel",
+        run: connectVercel,
+        disabled: !status?.github,
+      },
     },
   ]
 
@@ -110,5 +111,3 @@ export default function Connect() {
     </div>
   )
 }
-
-
