@@ -1,0 +1,563 @@
+﻿import { useEffect, useState } from "react"
+import { useSearchParams } from "react-router-dom"
+import { toast } from "sonner"
+import { api } from "./api"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Badge } from "@/components/ui/badge"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+
+type Proj = { id: string; name: string }
+type Dom = {
+  name: string
+  verified: boolean
+  projectId: string
+  projectName: string
+}
+type Rec = { type: string; name: string; value: string }
+type Check = {
+  verified: boolean
+  misconfigured: boolean
+  records: Rec[]
+  verification?: unknown[]
+}
+type DnsAnswer = {
+  type: number
+  ttl: number
+  data: string
+}
+type DnsCheck = {
+  resolver: string
+  type: string
+  ok: boolean
+  status: number | null
+  answers: DnsAnswer[]
+  error: string | null
+}
+type DomainInfo = {
+  registration?: {
+    lookup: string
+    registered: boolean | null
+    registrationYear: number | null
+    createdAt?: string | null
+    expiresAt?: string | null
+    registrar?: string | null
+    statuses?: string[]
+    error?: string
+  }
+  dns?: {
+    checks: DnsCheck[]
+    respondingResolvers: string[]
+    hasDnsAnswers: boolean
+  }
+}
+type Found = {
+  name: string
+  available: boolean | null
+  price: unknown
+  info: DomainInfo | null
+}
+
+function parseAvailability(value: unknown): boolean | null {
+  if (value === true || value === "true") return true
+  if (value === false || value === "false") return false
+  return null
+}
+
+function formatPrice(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return `$${value.toFixed(2)}`
+  }
+  if (typeof value === "string" && value.trim()) {
+    return value.startsWith("$") ? value : `$${value}`
+  }
+  if (value && typeof value === "object") {
+    const item = value as Record<string, unknown>
+    const amount = item.amount ?? item.price ?? item.registration
+    if (typeof amount === "number" || typeof amount === "string") {
+      return formatPrice(amount)
+    }
+  }
+  return null
+}
+
+function dnsTypeName(type: number): string {
+  const types: Record<number, string> = {
+    1: "A",
+    2: "NS",
+    5: "CNAME",
+    6: "SOA",
+    15: "MX",
+    16: "TXT",
+    28: "AAAA",
+    33: "SRV",
+    257: "CAA",
+  }
+  return types[type] || String(type)
+}
+
+export default function Domains() {
+  const [params] = useSearchParams()
+  const [projects, setProjects] = useState<Proj[]>([])
+  const [domains, setDomains] = useState<Dom[]>([])
+  const [projectId, setProjectId] = useState(params.get("project") || "")
+  const [q, setQ] = useState("")
+  const [found, setFound] = useState<Found[]>([])
+  const [busy, setBusy] = useState(false)
+  const [checks, setChecks] = useState<Record<string, Check>>({})
+  const [infoBusy, setInfoBusy] = useState<Record<string, boolean>>({})
+  const [domainInfo, setDomainInfo] = useState<Record<string, DomainInfo>>({})
+  const isNew = params.get("new") === "1"
+
+  async function loadDomains() {
+    try {
+      setDomains(await api.get("/api/domains"))
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
+  useEffect(() => {
+    api.get("/api/vercel/projects")
+      .then(setProjects)
+      .catch((e) => toast.error(e.message))
+    void loadDomains()
+  }, [])
+
+  async function inspectDomain(name: string): Promise<DomainInfo | null> {
+    setInfoBusy((s) => ({ ...s, [name]: true }))
+    try {
+      const info = await api.get(
+        `/api/domains/info?domain=${encodeURIComponent(name)}`
+      )
+      setDomainInfo((s) => ({ ...s, [name]: info }))
+      return info
+    } catch (e) {
+      toast.error(`Live lookup failed for ${name}: ${(e as Error).message}`)
+      return null
+    } finally {
+      setInfoBusy((s) => ({ ...s, [name]: false }))
+    }
+  }
+
+  async function search() {
+    const base = q.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "")
+    if (!base) {
+      toast.error("Enter a domain or domain name first")
+      return
+    }
+
+    const names = base.includes(".")
+      ? [base]
+      : [".com", ".in", ".net", ".app"].map((t) => base + t)
+
+    setBusy(true)
+    setFound([])
+
+    try {
+      const results = await Promise.all(
+        names.map(async (name): Promise<Found> => {
+          const result = await api.get(
+            `/api/domains/search?name=${encodeURIComponent(name)}`
+          )
+          return {
+            name: result.name || name,
+            available: parseAvailability(result.available),
+            price: result.price ?? result.registrationPrice ?? null,
+            info: null,
+          }
+        })
+      )
+
+      setFound(results)
+
+      // Registration date and public DNS checks are independent of availability.
+      const enriched = await Promise.all(
+        results.map(async (result) => ({
+          ...result,
+          info: await inspectDomain(result.name),
+        }))
+      )
+      setFound(enriched)
+    } catch (e) {
+      toast.error(`Domain search failed: ${(e as Error).message}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function check(name: string, pid: string) {
+    try {
+      const result = await api.post("/api/domains/verify", {
+        projectId: pid,
+        domain: name,
+      })
+      setChecks((s) => ({ ...s, [name]: result }))
+      await loadDomains()
+      await inspectDomain(name)
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
+  async function add(name: string) {
+    if (!projectId) {
+      toast.error("Select a project first")
+      return
+    }
+
+    try {
+      await api.post("/api/domains/add", {
+        projectId,
+        domain: name,
+      })
+      toast.success(`${name} added to the selected project`)
+      await check(name, projectId)
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
+  function availabilityLabel(value: boolean | null) {
+    if (value === true) return "Available to Register"
+    if (value === false) return "Registered / Not Available"
+    return "Unknown — Check Again"
+  }
+
+  function registrationLabel(info: DomainInfo | null | undefined) {
+    const registration = info?.registration
+    if (!registration) return "Registration data not checked"
+    if (registration.registrationYear) {
+      return `Registered in ${registration.registrationYear}`
+    }
+    if (registration.lookup === "not_found" || registration.registered === false) {
+      return "No RDAP registration record found; availability is not confirmed"
+    }
+    if (registration.error) return "Registration date unavailable"
+    return "Registration year not published by RDAP"
+  }
+
+  function dnsLabel(info: DomainInfo | null | undefined) {
+    const dns = info?.dns
+    if (!dns) return "DNS has not been checked"
+    if (dns.hasDnsAnswers) {
+      return `Public DNS answers found via ${dns.respondingResolvers.join(", ") || "a resolver"}`
+    }
+    return "No public DNS answers found in these checks"
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div>
+        <h1 className="text-2xl font-semibold">Domains</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Live availability, registration records and public DNS checks.
+        </p>
+      </div>
+
+      <Card className={isNew ? "border-primary" : ""}>
+        <CardHeader>
+          <CardTitle>
+            {isNew ? "Connect your custom domain" : "Search or connect a domain"}
+          </CardTitle>
+          <CardDescription>
+            Availability is checked separately from registration history and DNS.
+            Only buy a domain after the registrar confirms it is available.
+          </CardDescription>
+        </CardHeader>
+
+        <CardContent className="flex flex-col gap-4">
+          <div className="flex flex-wrap gap-2">
+            {projects.map((p) => (
+              <Button
+                key={p.id}
+                size="sm"
+                variant={p.id === projectId ? "default" : "outline"}
+                onClick={() => setProjectId(p.id)}
+              >
+                {p.name}
+              </Button>
+            ))}
+          </div>
+
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Input
+              placeholder="example.com or a name like mybrand"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void search()
+              }}
+            />
+            <Button disabled={busy} onClick={() => void search()}>
+              {busy ? "Checking live data..." : "Search"}
+            </Button>
+            <Button
+              variant="outline"
+              disabled={!q.includes(".")}
+              onClick={() => void add(q.trim().toLowerCase())}
+            >
+              Use my domain
+            </Button>
+          </div>
+
+          {found.map((f) => {
+            const price = formatPrice(f.price)
+            const info = f.info || domainInfo[f.name]
+            const registration = info?.registration
+            const dns = info?.dns
+
+            return (
+              <div
+                key={f.name}
+                className="flex flex-col gap-3 rounded-lg border p-3"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="break-all font-medium">{f.name}</p>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      {availabilityLabel(f.available)}
+                    </p>
+                    {f.available === true && price && (
+                      <p className="mt-1 text-sm">
+                        Registration price reported by Vercel: {price}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge
+                      variant={
+                        f.available === true
+                          ? "default"
+                          : f.available === false
+                            ? "destructive"
+                            : "secondary"
+                      }
+                    >
+                      {f.available === true
+                        ? "Available to Register"
+                        : f.available === false
+                          ? "Registered / Not Available"
+                          : "Unknown"}
+                    </Badge>
+
+                    {f.available === true && (
+                      <div className="flex flex-wrap gap-2">
+                        <Button asChild size="sm">
+                          <a
+                            href={`https://www.hostinger.com/in/domain-name-search?domain=${encodeURIComponent(f.name)}`}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Buy on Hostinger
+                          </a>
+                        </Button>
+                        <Button asChild size="sm" variant="outline">
+                          <a
+                            href={`https://www.godaddy.com/en-in/domains?domainToCheck=${encodeURIComponent(f.name)}`}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Buy on GoDaddy
+                          </a>
+                        </Button>
+                        <Button asChild size="sm" variant="outline">
+                          <a
+                            href={`https://vercel.com/domains/${encodeURIComponent(f.name)}`}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Register on Vercel
+                          </a>
+                        </Button>
+                      </div>
+                    )}
+
+                    {f.available === false && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void add(f.name)}
+                      >
+                        Use mine
+                      </Button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid gap-2 rounded-md bg-muted p-3 text-sm">
+                  <div>
+                    <p className="font-medium">Registration history</p>
+                    <p className="text-muted-foreground">
+                      {registrationLabel(info)}
+                    </p>
+                    {registration?.createdAt && (
+                      <p className="text-xs text-muted-foreground">
+                        Registered date: {registration.createdAt}
+                      </p>
+                    )}
+                    {registration?.registrar && (
+                      <p className="text-xs text-muted-foreground">
+                        Registrar: {registration.registrar}
+                      </p>
+                    )}
+                    {registration?.expiresAt && (
+                      <p className="text-xs text-muted-foreground">
+                        Expiration: {registration.expiresAt}
+                      </p>
+                    )}
+                    {registration?.error && (
+                      <p className="text-xs text-muted-foreground">
+                        RDAP detail: {registration.error}
+                      </p>
+                    )}
+                  </div>
+
+                  <div>
+                    <p className="font-medium">Public DNS</p>
+                    <p className="text-muted-foreground">{dnsLabel(info)}</p>
+                    {dns?.checks?.filter((c) => c.answers.length > 0).map((c, i) => (
+                      <div key={`${c.resolver}-${c.type}-${i}`} className="mt-1">
+                        <p className="text-xs font-medium">
+                          {c.resolver} / {c.type}
+                        </p>
+                        {c.answers.map((a, j) => (
+                          <p
+                            key={`${a.type}-${a.data}-${j}`}
+                            className="break-all font-mono text-xs"
+                          >
+                            {dnsTypeName(a.type)}: {a.data} (TTL {a.ttl})
+                          </p>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-fit"
+                    disabled={Boolean(infoBusy[f.name])}
+                    onClick={() => void inspectDomain(f.name)}
+                  >
+                    {infoBusy[f.name] ? "Refreshing..." : "Refresh registration and DNS"}
+                  </Button>
+                </div>
+              </div>
+            )
+          })}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Your domains</CardTitle>
+          <CardDescription>
+            Vercel project verification and public DNS are separate checks.
+          </CardDescription>
+        </CardHeader>
+
+        <CardContent className="flex flex-col gap-3">
+          {domains.length === 0 && (
+            <p className="text-sm text-muted-foreground">
+              No domains added yet.
+            </p>
+          )}
+
+          {domains.map((d) => {
+            const c = checks[d.name]
+            const info = domainInfo[d.name]
+            const dns = info?.dns
+
+            return (
+              <div
+                key={d.name + d.projectId}
+                className="flex flex-col gap-2 rounded-lg border p-3"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="break-all font-medium">{d.name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      Project: {d.projectName}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant={d.verified ? "default" : "secondary"}>
+                      {d.verified ? "Vercel verified" : "Not yet verified"}
+                    </Badge>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void check(d.name, d.projectId)}
+                    >
+                      Check status
+                    </Button>
+                  </div>
+                </div>
+
+                {c && (
+                  <div className="rounded-md bg-muted p-3 text-sm">
+                    <p className="mb-2">
+                      {c.misconfigured
+                        ? "Vercel reports a configuration issue. Check the recommended DNS records below."
+                        : c.verified
+                          ? "Vercel verification succeeded."
+                          : "Vercel has not confirmed the domain yet."}
+                    </p>
+                    {c.records.length === 0 && (
+                      <p className="text-muted-foreground">
+                        No recommended DNS records were returned. Check Vercel's project domain settings.
+                      </p>
+                    )}
+                    {c.records.map((r, i) => (
+                      <p
+                        key={`${r.type}-${r.name}-${i}`}
+                        className="break-all font-mono text-xs"
+                      >
+                        {r.type} Â· {r.name} Â· {r.value}
+                      </p>
+                    ))}
+                  </div>
+                )}
+
+                {info && (
+                  <div className="rounded-md bg-muted p-3 text-sm">
+                    <p>{registrationLabel(info)}</p>
+                    <p className="mt-1 text-muted-foreground">{dnsLabel(info)}</p>
+                    {dns?.checks?.filter((item) => item.answers.length > 0).map((item, i) => (
+                      <p
+                        key={`${item.resolver}-${item.type}-${i}`}
+                        className="break-all font-mono text-xs"
+                      >
+                        {item.resolver} / {item.type}:{" "}
+                        {item.answers.map((a) => a.data).join(", ")}
+                      </p>
+                    ))}
+                  </div>
+                )}
+
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="w-fit"
+                  disabled={Boolean(infoBusy[d.name])}
+                  onClick={() => void inspectDomain(d.name)}
+                >
+                  {infoBusy[d.name] ? "Checking DNS..." : "Check live DNS"}
+                </Button>
+              </div>
+            )
+          })}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+

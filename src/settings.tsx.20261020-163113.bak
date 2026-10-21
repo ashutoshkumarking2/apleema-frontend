@@ -1,0 +1,307 @@
+import { useEffect, useState } from "react"
+import { signOut } from "firebase/auth"
+import { toast } from "sonner"
+import { auth } from "./firebase"
+import { api } from "./api"
+import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+
+type Status = { github: boolean; githubLogin: string | null; vercel: boolean }
+type DisconnectTarget = { name: string; path: string }
+
+function makeCode() {
+  const values = new Uint32Array(1)
+  crypto.getRandomValues(values)
+  return String(10000000 + (values[0] % 90000000))
+}
+
+export default function Settings() {
+  const [status, setStatus] = useState<Status | null>(null)
+  const [showSignOut, setShowSignOut] = useState(false)
+  const [confirmEmail, setConfirmEmail] = useState("")
+  const [busy, setBusy] = useState(false)
+
+  const [disconnectTarget, setDisconnectTarget] = useState<DisconnectTarget | null>(null)
+  const [challengeCode, setChallengeCode] = useState("")
+  const [typedCode, setTypedCode] = useState("")
+  const [disconnectBusy, setDisconnectBusy] = useState(false)
+
+  const accountEmail = auth.currentUser?.email || ""
+  const emailMatches =
+    !!accountEmail &&
+    confirmEmail.trim().toLowerCase() === accountEmail.trim().toLowerCase()
+
+  const load = () =>
+    api.get("/api/status").then(setStatus).catch((e) => toast.error(e.message))
+
+  useEffect(() => {
+    load()
+  }, [])
+
+  async function handleSignOut() {
+    if (!emailMatches || busy) return
+
+    setBusy(true)
+    try {
+      await signOut(auth)
+      setShowSignOut(false)
+      setConfirmEmail("")
+      toast.success("Signed out successfully")
+    } catch (e) {
+      toast.error((e as Error).message || "Sign out failed")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function openDisconnect(name: string, path: string) {
+    setTypedCode("")
+    setChallengeCode(makeCode())
+    setDisconnectTarget({ name, path })
+  }
+
+  function cancelDisconnect() {
+    if (disconnectBusy) return
+    setDisconnectTarget(null)
+    setChallengeCode("")
+    setTypedCode("")
+  }
+
+  async function confirmDisconnect() {
+    if (
+      !disconnectTarget ||
+      typedCode !== challengeCode ||
+      disconnectBusy
+    ) return
+
+    setDisconnectBusy(true)
+    try {
+      await api.del(disconnectTarget.path)
+      toast.success(`${disconnectTarget.name} disconnected`)
+      setDisconnectTarget(null)
+      setChallengeCode("")
+      setTypedCode("")
+      await load()
+    } catch (e) {
+      toast.error((e as Error).message || "Disconnect failed")
+    } finally {
+      setDisconnectBusy(false)
+    }
+  }
+
+  const rows = [
+    { name: "GitHub", on: status?.github, path: "/api/github" },
+    { name: "Vercel", on: status?.vercel, path: "/api/vercel" },
+  ]
+
+  return (
+    <div className="flex flex-col gap-4">
+      <h1 className="text-2xl font-semibold">Settings</h1>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Account</CardTitle>
+          <CardDescription>
+            {accountEmail || auth.currentUser?.displayName || "Signed-in account"}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button
+            variant="outline"
+            onClick={() => {
+              setConfirmEmail("")
+              setShowSignOut(true)
+            }}
+          >
+            Sign out
+          </Button>
+        </CardContent>
+      </Card>
+
+      {rows.map((r) => (
+        <Card key={r.name}>
+          <CardContent className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="font-medium">{r.name}</span>
+              <Badge variant={r.on ? "default" : "secondary"}>
+                {r.on ? "Connected" : "Not connected"}
+              </Badge>
+            </div>
+            {r.on && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => openDisconnect(r.name, r.path)}
+              >
+                Disconnect
+              </Button>
+            )}
+          </CardContent>
+        </Card>
+      ))}
+
+      {showSignOut && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget && !busy) {
+              setShowSignOut(false)
+              setConfirmEmail("")
+            }
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="signout-title"
+            className="w-full max-w-md rounded-xl border bg-background p-6 text-foreground shadow-2xl"
+          >
+            <h2 id="signout-title" className="text-lg font-semibold">
+              Are you sure you want to sign out?
+            </h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Enter your account email address to confirm.
+            </p>
+
+            <label htmlFor="confirm-email" className="mt-5 block text-sm font-medium">
+              Confirm email
+            </label>
+            <input
+              id="confirm-email"
+              type="email"
+              autoComplete="email"
+              autoFocus
+              placeholder="Enter your email address"
+              value={confirmEmail}
+              onChange={(e) => setConfirmEmail(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && emailMatches) void handleSignOut()
+                if (e.key === "Escape" && !busy) setShowSignOut(false)
+              }}
+              className="mt-2 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+            />
+
+            {confirmEmail.length > 0 && !emailMatches && (
+              <p className="mt-2 text-sm text-destructive">
+                Email does not match your account.
+              </p>
+            )}
+
+            <div className="mt-6 flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={busy}
+                onClick={() => {
+                  setShowSignOut(false)
+                  setConfirmEmail("")
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                disabled={!emailMatches || busy}
+                onClick={() => void handleSignOut()}
+              >
+                {busy ? "Signing out..." : "Confirm Sign Out"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {disconnectTarget && (
+        <div
+          className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 p-4"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) cancelDisconnect()
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="disconnect-title"
+            className="w-full max-w-md rounded-xl border bg-background p-6 text-foreground shadow-2xl"
+          >
+            <h2 id="disconnect-title" className="text-lg font-semibold">
+              Disconnect {disconnectTarget.name}?
+            </h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              To confirm this action, manually type the 8-digit code below.
+            </p>
+
+            <div
+              className="mt-5 select-none rounded-lg border bg-muted/40 p-4 text-center"
+              onCopy={(e) => e.preventDefault()}
+              onCut={(e) => e.preventDefault()}
+              onContextMenu={(e) => e.preventDefault()}
+            >
+              <p className="text-xs text-muted-foreground">Confirmation code</p>
+              <p className="mt-2 font-mono text-3xl font-bold tracking-[0.3em]">
+                {challengeCode}
+              </p>
+            </div>
+
+            <label htmlFor="disconnect-code" className="mt-5 block text-sm font-medium">
+              Enter code
+            </label>
+            <input
+              id="disconnect-code"
+              type="text"
+              inputMode="numeric"
+              autoComplete="off"
+              maxLength={8}
+              placeholder="Type all 8 digits"
+              value={typedCode}
+              onChange={(e) =>
+                setTypedCode(e.target.value.replace(/\D/g, "").slice(0, 8))
+              }
+              onPaste={(e) => e.preventDefault()}
+              onCopy={(e) => e.preventDefault()}
+              onCut={(e) => e.preventDefault()}
+              onContextMenu={(e) => e.preventDefault()}
+              onKeyDown={(e) => {
+                if ((e.ctrlKey || e.metaKey) && ["c", "v", "x"].includes(e.key.toLowerCase())) {
+                  e.preventDefault()
+                }
+                if (e.key === "Escape") cancelDisconnect()
+                if (e.key === "Enter" && typedCode === challengeCode) {
+                  void confirmDisconnect()
+                }
+              }}
+              className="mt-2 w-full rounded-md border border-input bg-background px-3 py-2 text-center font-mono text-lg tracking-widest outline-none focus:ring-2 focus:ring-ring"
+            />
+
+            {typedCode.length === 8 && typedCode !== challengeCode && (
+              <p className="mt-2 text-sm text-destructive">
+                Code does not match. Please check and try again.
+              </p>
+            )}
+
+            <div className="mt-6 flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={disconnectBusy}
+                onClick={cancelDisconnect}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                disabled={typedCode !== challengeCode || disconnectBusy}
+                onClick={() => void confirmDisconnect()}
+              >
+                {disconnectBusy ? "Disconnecting..." : "Confirm Disconnect"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

@@ -1,0 +1,168 @@
+import { useEffect, useState } from "react"
+import { useSearchParams } from "react-router-dom"
+import { toast } from "sonner"
+import { api } from "./api"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Badge } from "@/components/ui/badge"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+
+type Proj = { id: string; name: string }
+type Dom = { name: string; verified: boolean; projectId: string; projectName: string }
+type Rec = { type: string; name: string; value: string }
+type Check = { verified: boolean; misconfigured: boolean; records: Rec[] }
+type Found = { name: string; available: boolean; price: number | null }
+
+export default function Domains() {
+  const [params] = useSearchParams()
+  const [projects, setProjects] = useState<Proj[]>([])
+  const [domains, setDomains] = useState<Dom[]>([])
+  const [projectId, setProjectId] = useState(params.get("project") || "")
+  const [q, setQ] = useState("")
+  const [found, setFound] = useState<Found[]>([])
+  const [busy, setBusy] = useState(false)
+  const [checks, setChecks] = useState<Record<string, Check>>({})
+  const isNew = params.get("new") === "1"
+
+  const loadDomains = () =>
+    api.get("/api/domains").then(setDomains).catch((e) => toast.error(e.message))
+
+  useEffect(() => {
+    api.get("/api/vercel/projects").then(setProjects).catch((e) => toast.error(e.message))
+    loadDomains()
+  }, [])
+
+  async function search() {
+    const base = q.trim().toLowerCase()
+    if (!base) return
+    const names = base.includes(".") ? [base] : [".com", ".in", ".net", ".app"].map((t) => base + t)
+    setBusy(true)
+    try {
+      setFound(await Promise.all(names.map((n) => api.get(`/api/domains/search?name=${n}`))))
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function check(name: string, pid: string) {
+    try {
+      const d = await api.post("/api/domains/verify", { projectId: pid, domain: name })
+      setChecks((s) => ({ ...s, [name]: d }))
+      loadDomains()
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
+  async function add(name: string) {
+    if (!projectId) return toast.error("Select a project first")
+    try {
+      await api.post("/api/domains/add", { projectId, domain: name })
+      toast.success(`${name} added`)
+      await check(name, projectId)
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      <h1 className="text-2xl font-semibold">Domains</h1>
+
+      <Card className={isNew ? "border-primary" : ""}>
+        <CardHeader>
+          <CardTitle>{isNew ? "Connect your custom domain" : "Add a custom domain"}</CardTitle>
+          <CardDescription>Search a domain, or type one you already own and add it.</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <div className="flex flex-wrap gap-2">
+            {projects.map((p) => (
+              <Button
+                key={p.id}
+                size="sm"
+                variant={p.id === projectId ? "default" : "outline"}
+                onClick={() => setProjectId(p.id)}
+              >
+                {p.name}
+              </Button>
+            ))}
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Input
+              placeholder="example.com or just a name"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && search()}
+            />
+            <Button disabled={busy} onClick={search}>{busy ? "Searching…" : "Search"}</Button>
+            <Button variant="outline" disabled={!q.includes(".")} onClick={() => add(q.trim().toLowerCase())}>
+              Add domain
+            </Button>
+          </div>
+          {found.map((f) => (
+            <div key={f.name} className="flex items-center justify-between gap-2 rounded-lg border p-3">
+              <div className="min-w-0">
+                <p className="truncate font-medium">{f.name}</p>
+                <p className="text-xs text-muted-foreground">
+                  {f.available ? (f.price ? `Available · $${f.price}` : "Available") : "Already taken"}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Badge variant={f.available ? "default" : "secondary"}>{f.available ? "Available" : "Taken"}</Badge>
+                {f.available ? (
+                  <Button asChild variant="outline" size="sm">
+                    <a href="https://vercel.com/domains" target="_blank" rel="noreferrer">Buy</a>
+                  </Button>
+                ) : (
+                  <Button size="sm" onClick={() => add(f.name)}>Use mine</Button>
+                )}
+              </div>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Your domains</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          {domains.length === 0 && <p className="text-sm text-muted-foreground">No domains added yet.</p>}
+          {domains.map((d) => {
+            const c = checks[d.name]
+            return (
+              <div key={d.name + d.projectId} className="flex flex-col gap-2 rounded-lg border p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate font-medium">{d.name}</p>
+                    <p className="text-xs text-muted-foreground">Project: {d.projectName}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant={d.verified ? "default" : "secondary"}>{d.verified ? "Verified" : "Pending"}</Badge>
+                    <Button size="sm" variant="outline" onClick={() => check(d.name, d.projectId)}>
+                      Check status
+                    </Button>
+                  </div>
+                </div>
+                {c && (
+                  <div className="rounded-md bg-muted p-3 text-sm">
+                    <p className="mb-2">
+                      {c.misconfigured ? "DNS not set yet. Add this record at your registrar:" : "DNS looks correct."}
+                    </p>
+                    {c.records.map((r) => (
+                      <p key={r.type + r.name} className="break-all font-mono text-xs">
+                        {r.type} · {r.name} · {r.value}
+                      </p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}

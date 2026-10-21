@@ -1,0 +1,96 @@
+﻿import { useEffect, useState } from "react"
+import { Navigate, Route, Routes } from "react-router-dom"
+import { onAuthStateChanged, type User } from "firebase/auth"
+import { auth } from "./firebase"
+import { Toaster } from "@/components/ui/sonner"
+import Login from "./login"
+import Layout from "./layout"
+import Dashboard from "./dashboard"
+import Connect from "./connect"
+import Repos from "./repos"
+import Import from "./import"
+import Projects from "./projects"
+import Domains from "./domains"
+import Settings from "./settings"
+
+export default function App() {
+  const [user, setUser] = useState<User | null>(null)
+  const [ready, setReady] = useState(false)
+
+  useEffect(
+    () =>
+      onAuthStateChanged(auth, (u) => {
+        setUser(u)
+        setReady(true)
+      }),
+    []
+  )
+
+  if (!ready) {
+    return (
+      <main className="flex min-h-svh items-center justify-center overflow-hidden bg-[#F8F3E9] px-6 text-[#191919]">
+        <section
+          role="status"
+          aria-live="polite"
+          className="flex w-full max-w-xs flex-col items-center text-center"
+        >
+          <img
+            src="/apleemaofficial.png"
+            alt="Apleema"
+            className="mb-5 h-20 w-20 shrink-0 object-contain sm:h-24 sm:w-24 md:h-28 md:w-28"
+          />
+
+          <h1 className="text-xl font-medium tracking-[0.22em]">
+            APLEEMA
+          </h1>
+
+          <p className="mt-4 text-sm tracking-wide text-[#49443D]">
+            Preparing your workspace...
+          </p>
+
+          <div className="mt-7 h-8 w-8 animate-spin rounded-full border-2 border-[#DCD1BE] border-t-[#191919]" />
+
+          <div className="mt-6 h-1 w-36 max-w-[70vw] overflow-hidden rounded-full bg-[#DED4C3]">
+            <div className="h-full w-1/3 animate-[apleema-progress_1.8s_ease-in-out_infinite] rounded-full bg-[#191919]" />
+          </div>
+
+          <p className="mt-3 text-[10px] tracking-[0.14em] text-[#81796D]">
+            GETTING EVERYTHING READY
+          </p>
+        </section>
+
+        <style>{`
+          @keyframes apleema-progress {
+            0% { transform: translateX(-110%); }
+            100% { transform: translateX(310%); }
+          }
+          @media (prefers-reduced-motion: reduce) {
+            .animate-spin, .animate-\\[apleema-progress_1\\.8s_ease-in-out_infinite\\] {
+              animation-duration: 3s;
+            }
+          }
+        `}</style>
+      </main>
+    );
+  }
+
+  return (
+    <>
+      <Routes>
+        <Route path="/login" element={user ? <Navigate to="/" replace /> : <Login />} />
+        <Route element={user ? <Layout user={user} /> : <Navigate to="/login" replace />}>
+          <Route index element={<Dashboard />} />
+          <Route path="connect" element={<Connect />} />
+          <Route path="repos" element={<Repos />} />
+          <Route path="import" element={<Import />} />
+          <Route path="projects" element={<Projects />} />
+          <Route path="domains" element={<Domains />} />
+          <Route path="settings" element={<Settings />} />
+        </Route>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+      <Toaster richColors />
+    </>
+  )
+}
+

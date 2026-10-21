@@ -1,0 +1,50 @@
+import { useEffect, useState } from "react"
+import { Navigate, Route, Routes } from "react-router-dom"
+import { onAuthStateChanged, type User } from "firebase/auth"
+import { auth } from "./firebase"
+import { Toaster } from "@/components/ui/sonner"
+import Login from "./Login"
+import Layout from "./Layout"
+import Dashboard from "./Dashboard"
+import Connect from "./Connect"
+import Repos from "./Repos"
+import Import from "./Import"
+import Projects from "./Projects"
+import Domains from "./Domains"
+import Settings from "./Settings"
+
+export default function App() {
+  const [user, setUser] = useState<User | null>(null)
+  const [ready, setReady] = useState(false)
+
+  useEffect(
+    () =>
+      onAuthStateChanged(auth, (u) => {
+        setUser(u)
+        setReady(true)
+      }),
+    []
+  )
+
+  if (!ready)
+    return <div className="grid min-h-svh place-items-center text-muted-foreground">Loading…</div>
+
+  return (
+    <>
+      <Routes>
+        <Route path="/login" element={user ? <Navigate to="/" replace /> : <Login />} />
+        <Route element={user ? <Layout user={user} /> : <Navigate to="/login" replace />}>
+          <Route index element={<Dashboard />} />
+          <Route path="connect" element={<Connect />} />
+          <Route path="repos" element={<Repos />} />
+          <Route path="import" element={<Import />} />
+          <Route path="projects" element={<Projects />} />
+          <Route path="domains" element={<Domains />} />
+          <Route path="settings" element={<Settings />} />
+        </Route>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+      <Toaster richColors />
+    </>
+  )
+}
